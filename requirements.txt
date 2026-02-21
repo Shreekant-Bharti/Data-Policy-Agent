@@ -49,7 +49,7 @@ python-multipart==0.0.6
 
 # Vector Store (for semantic search)
 chromadb==0.4.22
-faiss-cpu==1.7.4
+faiss-cpu>=1.8.0
 
 # Testing
 pytest==8.0.0
