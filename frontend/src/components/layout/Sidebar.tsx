@@ -1,6 +1,6 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
@@ -13,6 +13,7 @@ import {
   Shield,
   TrendingUp,
 } from "lucide-react";
+import { fetchDashboard, type DashboardData } from "@/lib/api";
 
 const menuItems = [
   {
@@ -47,14 +48,38 @@ const menuItems = [
   },
 ];
 
-const quickStats = [
-  { label: "Active Policies", value: "12", icon: Shield },
-  { label: "Compliance Rate", value: "94.2%", icon: TrendingUp },
-  { label: "Connected DBs", value: "3", icon: Database },
-];
-
 export default function Sidebar() {
   const pathname = usePathname();
+  const [stats, setStats] = useState({
+    activePolicies: "—",
+    complianceRate: "—",
+    connectedDBs: "—",
+  });
+  const [monitoring, setMonitoring] = useState(true);
+
+  useEffect(() => {
+    const loadStats = async () => {
+      try {
+        const data: DashboardData = await fetchDashboard();
+        setStats({
+          activePolicies: String(data.rules_count || 0),
+          complianceRate: `${(data.compliance_score || 0).toFixed(1)}%`,
+          connectedDBs: String(data.connected_databases?.length || 0),
+        });
+      } catch {
+        // Keep defaults if API not ready
+      }
+    };
+    loadStats();
+    const interval = setInterval(loadStats, 30000); // Refresh every 30s
+    return () => clearInterval(interval);
+  }, []);
+
+  const quickStats = [
+    { label: "Active Policies", value: stats.activePolicies, icon: Shield },
+    { label: "Compliance Rate", value: stats.complianceRate, icon: TrendingUp },
+    { label: "Connected DBs", value: stats.connectedDBs, icon: Database },
+  ];
 
   return (
     <aside className="fixed left-0 top-16 bottom-0 w-64 bg-dark-950 border-r border-dark-700 overflow-y-auto">
@@ -67,11 +92,10 @@ export default function Sidebar() {
               <Link
                 key={item.name}
                 href={item.href}
-                className={`flex items-center space-x-3 px-3 py-2.5 rounded-lg transition-all duration-200 group ${
-                  isActive
+                className={`flex items-center space-x-3 px-3 py-2.5 rounded-lg transition-all duration-200 group ${isActive
                     ? "bg-accent-primary/10 text-accent-primary border-l-2 border-accent-primary"
                     : "text-dark-400 hover:text-dark-100 hover:bg-dark-800"
-                }`}
+                  }`}
               >
                 <item.icon
                   className={`w-5 h-5 ${isActive ? "text-accent-primary" : "text-dark-500 group-hover:text-dark-300"}`}
@@ -122,8 +146,10 @@ export default function Sidebar() {
                 Monitoring
               </span>
               <div className="flex items-center space-x-2">
-                <span className="w-2 h-2 bg-accent-success rounded-full pulse-indicator"></span>
-                <span className="text-xs text-accent-success">Active</span>
+                <span className={`w-2 h-2 rounded-full ${monitoring ? "bg-accent-success pulse-indicator" : "bg-dark-500"}`}></span>
+                <span className={`text-xs ${monitoring ? "text-accent-success" : "text-dark-500"}`}>
+                  {monitoring ? "Active" : "Paused"}
+                </span>
               </div>
             </div>
             <p className="text-xs text-dark-500">Next scan in 4:32</p>

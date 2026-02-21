@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useCallback } from "react";
+import React, { useState, useCallback, useEffect } from "react";
 import { DashboardLayout } from "@/components/layout";
 import { StatusBadge } from "@/components/ui";
 import {
@@ -14,7 +14,10 @@ import {
   Trash2,
   RotateCcw,
   Settings,
+  Loader2,
+  Download,
 } from "lucide-react";
+import { uploadPolicy, fetchRules, fetchPolicies, loadRules } from "@/lib/api";
 
 interface ExtractedRule {
   id: string;
@@ -25,49 +28,6 @@ interface ExtractedRule {
   confidence: number;
 }
 
-const mockRules: ExtractedRule[] = [
-  {
-    id: "1",
-    ruleId: "R-101",
-    condition: "Transaction Amount > 10,00,000 INR",
-    obligation: "Must be reported to FIU within 24 hours",
-    status: "success",
-    confidence: 98,
-  },
-  {
-    id: "2",
-    ruleId: "R-102",
-    condition: "Customer is PEP (Politically Exposed Person)",
-    obligation: "Enhanced due diligence required before account opening",
-    status: "success",
-    confidence: 95,
-  },
-  {
-    id: "3",
-    ruleId: "R-103",
-    condition: "Cross-border transaction > 5,00,000 INR",
-    obligation: "Beneficiary details must be verified and documented",
-    status: "review",
-    confidence: 72,
-  },
-  {
-    id: "4",
-    ruleId: "R-104",
-    condition: "Multiple cash deposits within 24 hours totaling > 50,000",
-    obligation: "Flag for suspicious activity review",
-    status: "success",
-    confidence: 91,
-  },
-  {
-    id: "5",
-    ruleId: "R-105",
-    condition: "Account dormant > 12 months with sudden activity",
-    obligation: "Require re-verification of KYC documents",
-    status: "review",
-    confidence: 68,
-  },
-];
-
 export default function PolicyIngestion() {
   const [isDragging, setIsDragging] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<string | null>(null);
@@ -75,6 +35,35 @@ export default function PolicyIngestion() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [extractedRules, setExtractedRules] = useState<ExtractedRule[]>([]);
   const [humanReview, setHumanReview] = useState(true);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [policies, setPolicies] = useState<any[]>([]);
+  const [stats, setStats] = useState({ documents: 0, rules: 0, avgConfidence: 0, pendingReview: 0 });
+  const [activating, setActivating] = useState(false);
+
+  // Load existing policies and rules on mount
+  useEffect(() => {
+    const loadExisting = async () => {
+      try {
+        const [policiesData, rulesData] = await Promise.all([
+          fetchPolicies(),
+          fetchRules(),
+        ]);
+        setPolicies(policiesData.policies || []);
+        setStats(prev => ({
+          ...prev,
+          documents: policiesData.count || 0,
+          rules: rulesData.count || 0,
+          avgConfidence: rulesData.rules?.length > 0
+            ? Math.round(rulesData.rules.reduce((acc: number, r: any) => acc + (r.confidence || 85), 0) / rulesData.rules.length)
+            : 0,
+          pendingReview: rulesData.rules?.filter((r: any) => r.status === "review").length || 0,
+        }));
+      } catch {
+        // API not ready yet
+      }
+    };
+    loadExisting();
+  }, []);
 
   const handleDragOver = useCallback((e: React.DragEvent) => {
     e.preventDefault();
@@ -90,39 +79,65 @@ export default function PolicyIngestion() {
     setIsDragging(false);
 
     const files = e.dataTransfer.files;
-    if (files.length > 0 && files[0].type === "application/pdf") {
-      simulateUpload(files[0].name);
+    if (files.length > 0) {
+      handleUpload(files[0]);
     }
   }, []);
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (files && files.length > 0) {
-      simulateUpload(files[0].name);
+      handleUpload(files[0]);
     }
   };
 
-  const simulateUpload = (fileName: string) => {
-    setUploadedFile(fileName);
+  const handleUpload = async (file: File) => {
+    setUploadedFile(file.name);
     setUploadProgress(0);
     setIsProcessing(true);
     setExtractedRules([]);
+    setUploadError(null);
 
-    // Simulate upload progress
+    // Show progress animation
     const progressInterval = setInterval(() => {
       setUploadProgress((prev) => {
-        if (prev >= 100) {
+        if (prev >= 90) {
           clearInterval(progressInterval);
-          // After upload, show extracted rules
-          setTimeout(() => {
-            setExtractedRules(mockRules);
-            setIsProcessing(false);
-          }, 500);
-          return 100;
+          return 90;
         }
-        return prev + 10;
+        return prev + 15;
       });
     }, 200);
+
+    try {
+      const result = await uploadPolicy(file);
+      clearInterval(progressInterval);
+      setUploadProgress(100);
+
+      // Fetch the rules after upload
+      const rulesData = await fetchRules();
+      const mappedRules: ExtractedRule[] = (rulesData.rules || []).map((rule: any, index: number) => ({
+        id: String(index + 1),
+        ruleId: rule.rule_id || rule.id || `R-${100 + index + 1}`,
+        condition: rule.condition || rule.description || "Condition extracted from policy",
+        obligation: rule.obligation || rule.action || "Compliance action required",
+        status: (rule.confidence || 85) >= 80 ? "success" : "review",
+        confidence: rule.confidence || 85,
+      }));
+
+      setExtractedRules(mappedRules);
+      setStats(prev => ({
+        ...prev,
+        documents: prev.documents + 1,
+        rules: rulesData.count || 0,
+      }));
+    } catch (err: any) {
+      clearInterval(progressInterval);
+      setUploadProgress(100);
+      setUploadError(err.message || "Upload failed");
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   const resetUpload = () => {
@@ -130,6 +145,37 @@ export default function PolicyIngestion() {
     setUploadProgress(0);
     setExtractedRules([]);
     setIsProcessing(false);
+    setUploadError(null);
+  };
+
+  const handleActivatePolicy = async () => {
+    setActivating(true);
+    try {
+      await loadRules();
+      alert("Policy rules activated successfully!");
+    } catch (err: any) {
+      alert("Failed to activate: " + err.message);
+    } finally {
+      setActivating(false);
+    }
+  };
+
+  const handleExportRules = () => {
+    const blob = new Blob([JSON.stringify(extractedRules, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "extracted_rules.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDeleteRule = (ruleId: string) => {
+    setExtractedRules(prev => prev.filter(r => r.id !== ruleId));
+  };
+
+  const handleViewRule = (rule: ExtractedRule) => {
+    alert(`Rule ${rule.ruleId}\n\nCondition: ${rule.condition}\nObligation: ${rule.obligation}\nConfidence: ${rule.confidence}%`);
   };
 
   return (
@@ -155,11 +201,10 @@ export default function PolicyIngestion() {
               onDragOver={handleDragOver}
               onDragLeave={handleDragLeave}
               onDrop={handleDrop}
-              className={`border-2 border-dashed rounded-xl p-8 text-center transition-all duration-200 ${
-                isDragging
+              className={`border-2 border-dashed rounded-xl p-8 text-center transition-all duration-200 ${isDragging
                   ? "border-accent-primary bg-accent-primary/10"
                   : "border-dark-600 hover:border-dark-500 hover:bg-dark-800/50"
-              }`}
+                }`}
             >
               {!uploadedFile ? (
                 <>
@@ -167,20 +212,20 @@ export default function PolicyIngestion() {
                     className={`w-12 h-12 mx-auto mb-4 ${isDragging ? "text-accent-primary" : "text-dark-500"}`}
                   />
                   <p className="text-dark-200 font-medium mb-2">
-                    Drag & drop your PDF document here
+                    Drag & drop your policy document here
                   </p>
                   <p className="text-dark-500 text-sm mb-4">or</p>
                   <label className="btn-primary cursor-pointer inline-block">
                     Browse Files
                     <input
                       type="file"
-                      accept=".pdf"
+                      accept=".pdf,.md,.txt"
                       onChange={handleFileSelect}
                       className="hidden"
                     />
                   </label>
                   <p className="text-dark-500 text-xs mt-4">
-                    Supported format: PDF (Max 50MB)
+                    Supported formats: PDF, Markdown, TXT (Max 50MB)
                   </p>
                 </>
               ) : (
@@ -191,7 +236,7 @@ export default function PolicyIngestion() {
                       <p className="text-dark-200 font-medium">
                         {uploadedFile}
                       </p>
-                      <p className="text-dark-500 text-sm">PDF Document</p>
+                      <p className="text-dark-500 text-sm">Policy Document</p>
                     </div>
                   </div>
 
@@ -199,16 +244,19 @@ export default function PolicyIngestion() {
                   <div className="max-w-md mx-auto">
                     <div className="flex items-center justify-between text-sm mb-2">
                       <span className="text-dark-400">
-                        {isProcessing ? "Processing..." : "Upload Complete"}
+                        {isProcessing ? "Processing..." : uploadError ? "Error" : "Upload Complete"}
                       </span>
                       <span className="text-dark-200">{uploadProgress}%</span>
                     </div>
                     <div className="h-2 bg-dark-700 rounded-full overflow-hidden">
                       <div
-                        className="h-full bg-accent-primary rounded-full transition-all duration-200"
+                        className={`h-full rounded-full transition-all duration-200 ${uploadError ? "bg-accent-danger" : "bg-accent-primary"}`}
                         style={{ width: `${uploadProgress}%` }}
                       />
                     </div>
+                    {uploadError && (
+                      <p className="text-xs text-accent-danger mt-2">{uploadError}</p>
+                    )}
                   </div>
 
                   {!isProcessing && (
@@ -256,11 +304,10 @@ export default function PolicyIngestion() {
                 {extractedRules.map((rule) => (
                   <div
                     key={rule.id}
-                    className={`p-4 rounded-lg border transition-all duration-200 hover:border-dark-500 ${
-                      rule.status === "success"
+                    className={`p-4 rounded-lg border transition-all duration-200 hover:border-dark-500 ${rule.status === "success"
                         ? "bg-dark-800/50 border-dark-700"
                         : "bg-accent-warning/5 border-accent-warning/30"
-                    }`}
+                      }`}
                   >
                     <div className="flex items-start justify-between">
                       <div className="flex-1">
@@ -303,10 +350,16 @@ export default function PolicyIngestion() {
                       </div>
 
                       <div className="flex items-center space-x-2 ml-4">
-                        <button className="p-2 rounded-lg hover:bg-dark-700 transition-colors">
+                        <button
+                          onClick={() => handleViewRule(rule)}
+                          className="p-2 rounded-lg hover:bg-dark-700 transition-colors"
+                        >
                           <Eye className="w-4 h-4 text-dark-400" />
                         </button>
-                        <button className="p-2 rounded-lg hover:bg-dark-700 transition-colors">
+                        <button
+                          onClick={() => handleDeleteRule(rule.id)}
+                          className="p-2 rounded-lg hover:bg-dark-700 transition-colors"
+                        >
                           <Trash2 className="w-4 h-4 text-dark-400" />
                         </button>
                       </div>
@@ -317,8 +370,18 @@ export default function PolicyIngestion() {
 
               {/* Actions */}
               <div className="flex items-center justify-between mt-6 pt-4 border-t border-dark-700">
-                <button className="btn-secondary">Export Rules</button>
-                <button className="btn-primary">Activate Policy</button>
+                <button onClick={handleExportRules} className="btn-secondary inline-flex items-center space-x-2">
+                  <Download className="w-4 h-4" />
+                  <span>Export Rules</span>
+                </button>
+                <button
+                  onClick={handleActivatePolicy}
+                  disabled={activating}
+                  className="btn-primary inline-flex items-center space-x-2"
+                >
+                  {activating && <Loader2 className="w-4 h-4 animate-spin" />}
+                  <span>{activating ? "Activating..." : "Activate Policy"}</span>
+                </button>
               </div>
             </div>
           )}
@@ -334,14 +397,12 @@ export default function PolicyIngestion() {
               </h3>
               <button
                 onClick={() => setHumanReview(!humanReview)}
-                className={`relative w-12 h-6 rounded-full transition-colors ${
-                  humanReview ? "bg-accent-primary" : "bg-dark-600"
-                }`}
+                className={`relative w-12 h-6 rounded-full transition-colors ${humanReview ? "bg-accent-primary" : "bg-dark-600"
+                  }`}
               >
                 <span
-                  className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${
-                    humanReview ? "left-7" : "left-1"
-                  }`}
+                  className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-transform ${humanReview ? "left-7" : "left-1"
+                    }`}
                 />
               </button>
             </div>
@@ -362,20 +423,20 @@ export default function PolicyIngestion() {
                 <span className="text-sm text-dark-400">
                   Documents Processed
                 </span>
-                <span className="text-sm font-medium text-dark-200">47</span>
+                <span className="text-sm font-medium text-dark-200">{stats.documents}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-dark-400">Rules Extracted</span>
-                <span className="text-sm font-medium text-dark-200">312</span>
+                <span className="text-sm font-medium text-dark-200">{stats.rules}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-dark-400">Avg. Confidence</span>
-                <span className="text-sm font-medium text-dark-200">89.4%</span>
+                <span className="text-sm font-medium text-dark-200">{stats.avgConfidence > 0 ? `${stats.avgConfidence}%` : "N/A"}</span>
               </div>
               <div className="flex items-center justify-between">
                 <span className="text-sm text-dark-400">Pending Review</span>
                 <span className="text-sm font-medium text-accent-warning">
-                  12
+                  {stats.pendingReview}
                 </span>
               </div>
             </div>
@@ -387,27 +448,27 @@ export default function PolicyIngestion() {
               Recent Uploads
             </h3>
             <div className="space-y-3">
-              {[
-                { name: "AML_Policy_v2.pdf", rules: 23, date: "2 hours ago" },
-                { name: "KYC_Guidelines.pdf", rules: 18, date: "Yesterday" },
-                { name: "GDPR_Compliance.pdf", rules: 31, date: "3 days ago" },
-              ].map((file, index) => (
-                <div
-                  key={index}
-                  className="flex items-center justify-between py-2 border-b border-dark-700 last:border-b-0"
-                >
-                  <div className="flex items-center space-x-3">
-                    <FileText className="w-4 h-4 text-dark-500" />
-                    <div>
-                      <p className="text-sm text-dark-200">{file.name}</p>
-                      <p className="text-xs text-dark-500">
-                        {file.rules} rules
-                      </p>
+              {policies.length > 0 ? (
+                policies.slice(0, 5).map((policy: any, index: number) => (
+                  <div
+                    key={index}
+                    className="flex items-center justify-between py-2 border-b border-dark-700 last:border-b-0"
+                  >
+                    <div className="flex items-center space-x-3">
+                      <FileText className="w-4 h-4 text-dark-500" />
+                      <div>
+                        <p className="text-sm text-dark-200">{policy.name || policy.filename || `Policy ${index + 1}`}</p>
+                        <p className="text-xs text-dark-500">
+                          {policy.rules_count || 0} rules
+                        </p>
+                      </div>
                     </div>
+                    <span className="text-xs text-dark-500">{policy.uploaded_at || "Recent"}</span>
                   </div>
-                  <span className="text-xs text-dark-500">{file.date}</span>
-                </div>
-              ))}
+                ))
+              ) : (
+                <p className="text-sm text-dark-500 text-center py-4">No policies uploaded yet</p>
+              )}
             </div>
           </div>
         </div>

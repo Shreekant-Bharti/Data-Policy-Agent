@@ -7,7 +7,7 @@ from pathlib import Path
 from datetime import datetime
 from fastapi import FastAPI, APIRouter, HTTPException, UploadFile, File, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, RedirectResponse
 from pydantic import BaseModel, Field
 from loguru import logger
 
@@ -534,14 +534,10 @@ def create_app() -> FastAPI:
     # Include router
     app.include_router(router)
     
-    # Root redirect
+    # Root: redirect to API docs so users see the real UI, not raw JSON
     @app.get("/", include_in_schema=False)
     async def root_redirect():
-        return {
-            "message": "Data Policy Agent API",
-            "docs": "/docs",
-            "api": "/api"
-        }
+        return RedirectResponse(url="/docs", status_code=302)
     
     @app.on_event("startup")
     async def startup_event():

@@ -55,7 +55,6 @@ def main():
     )
 
 
-# Create app instance for uvicorn
 from src.api.routes import create_app
 app = create_app()
 
